@@ -61,7 +61,7 @@ namespace tga {
             return iterator_range<Iterator>{from_, to_};
         }
 
-        template<typename DataProvider>
+        template<typename DataProvider, typename Derived>
         class reader_base {
         protected:
             DataProvider    _src;
@@ -90,11 +90,35 @@ namespace tga {
 
             DataProvider& provider() { return _src; }
             const DataProvider& provider() const { return _src; }
+
+            const tga_header& header() const { return static_cast<const Derived*>( this )->get_header(); }
+
+            unsigned int total_pixel_count() const {
+                return  header()._image_width
+                    *  header()._image_height;
+            }
+
+            unsigned int total_image_bits() const {
+                return total_pixel_count()
+                    *  header()._image_bits_per_pixel;
+            }
+
+            unsigned int total_image_size() const {
+                return total_image_bits() / 8;
+            }
+
+            unsigned int pixel_bits() const {
+                return header()._image_bits_per_pixel;
+            }
+
+            unsigned int pixel_bytes() const {
+                return pixel_bits() / 8;
+            }
         };
 
         // default version
         template<typename DataProvider, bool IsMap>
-        class reader : public reader_base<DataProvider> {
+        class reader : public reader_base<DataProvider, reader<DataProvider, IsMap>> {
         public:
             reader() = default;
             ~reader() = default;
@@ -111,13 +135,15 @@ namespace tga {
             }
 
         protected:
+            friend class reader_base<DataProvider, reader<DataProvider, IsMap>>;
             tga_header _local_header;
+            const tga_header& get_header() const { return _local_header; }
 
             template<typename PixelReciver>
             void read_pixels_raw( PixelReciver clb_ ) {
-                const auto pix_size = ( *this )->_image_bits_per_pixel / 8;
-                auto at = sizeof(tga_header)+( *this )->_id_length;
-                auto to = at + ( *this )->_image_width * ( *this )->_image_height * pix_size;
+                const auto pix_size = pixel_bytes();
+                auto at = sizeof(tga_header)+header()._id_length;
+                auto to = at + total_pixel_count() * pix_size;
                 unsigned char pix;
                 unsigned char buf[4];
                 for ( ; at < to; ++at ) {
@@ -129,10 +155,10 @@ namespace tga {
 
             template<typename PixelReciver>
             void read_pixels_rle( PixelReciver clb_ ) {
-                const auto pix_size = ( *this )->_image_bits_per_pixel / 8;
-                auto length = ( *this )->_image_width * ( *this )->_image_height;
+                const auto pix_size = pixel_bytes();
+                auto length = total_pixel_count() * pix_size;
 
-                auto offset = sizeof(tga_header)+( *this )->_id_length;
+                auto offset = sizeof(tga_header)+header()._id_length;
 
                 unsigned char pixel[4];
 
@@ -162,16 +188,17 @@ namespace tga {
                     at += block_advance;
                 }
             }
-
-        public:
-            const tga_header* operator->( ) const { return &_local_header; }
         };
 
         // memory mapped version
         template<typename DataProvider>
-        class reader<DataProvider, true> : public reader_base<DataProvider> {
+        class reader<DataProvider, true>
+            : public reader_base<DataProvider, reader<DataProvider, true>> {
             const void*     _ptr { nullptr };
             size_t          _size { 0 };
+
+            friend class reader_base<DataProvider, reader<DataProvider, true>>;
+            const tga_header& get_header() const { return *reinterpret_cast<const tga_header*>( _ptr ); }
         public:
             reader() = default;
             ~reader() = default;
@@ -193,8 +220,8 @@ namespace tga {
             void read_pixels_raw( PixelReciver clb_ ) {
                 auto bptr = reinterpret_cast<const unsigned char*>( _ptr );
 
-                auto from = sizeof(tga_header)+( *this )->_id_length;
-                auto to = from + ( ( *this )->_image_width * ( *this )->_image_height * ( *this )->_image_bits_per_pixel ) / 8;
+                auto from = sizeof(tga_header)+header()._id_length;
+                auto to = from + total_image_size();
                 if ( to > _size ) {
                     to = _size;
                 }
@@ -203,10 +230,10 @@ namespace tga {
 
             template<typename PixelReciver>
             void read_pixels_rle( PixelReciver clb_ ) {
-                auto offset = sizeof(tga_header)+( *this )->_id_length;
+                auto offset = sizeof(tga_header)+header()._id_length;
                 auto start = reinterpret_cast<const unsigned char*>( _ptr );
                 auto read_range = make_iterator_range( start + offset, start + _size );
-                const auto pix_size = ( *this )->_image_bits_per_pixel / 8;
+                const auto pix_size = pixel_bytes();
 
                 while ( !read_range.empty() ) {
                     // the difference between a raw and a rle block is just
@@ -228,9 +255,6 @@ namespace tga {
                     read_range.advance_begin( block_advance );
                 }
             }
-
-        public:
-            const tga_header* operator->( ) const { return reinterpret_cast<const tga_header*>( _ptr ); }
         };
     }
 
@@ -256,7 +280,7 @@ namespace tga {
 
         template<typename PixelReciver>
         void operator()( PixelReciver clb_ ) {
-            switch ( ( *this )->_image_type ) {
+            switch ( header()._image_type ) {
             default:
             case 0: break;
             case 1: read_maped_pixels_raw<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
@@ -267,22 +291,11 @@ namespace tga {
             case 10: read_pixels_rle<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
             }
         }
-
-        unsigned int total_pixel_count() const {
-            return ( *this )->_image_width
-                * ( *this )->_image_height;
-        }
-
-        unsigned int total_image_size() const {
-            return total_pixel_count()
-                * ( *this )->_image_bits_per_pixel
-                / 8;
-        }
     };
 
     class writer {
     public:
         template<typename PixelProvider>
-        void operator()( PixelProvider clb_ );
+        void write_pxeils( PixelProvider clb_ );
     };
 }
