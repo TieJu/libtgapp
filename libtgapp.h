@@ -1,19 +1,28 @@
+#pragma once
+
 namespace tga {
+#if defined(USE_BYTE_ORDER_TYPES)
+    typedef ::byte_order::little_uchar_t    little_uchar_t;
+    typedef ::byte_order::little_ushort_t   little_ushort_t;
+#else
+    typedef unsigned char   little_uchar_t;
+    typedef unsigned short  little_ushort_t;
+#endif
 #pragma pack(push)
 #pragma pack(1)
     struct tga_header {
-        unsigned char      _id_length;
-        unsigned char      _color_map_type;
-        unsigned char      _image_type;
-        unsigned short     _color_map_first_entry_index;
-        unsigned short     _color_map_length;
-        unsigned char      _color_map_entry_size;
-        unsigned short     _image_x_origin;
-        unsigned short     _image_y_origin;
-        unsigned short     _image_width;
-        unsigned short     _image_height;
-        unsigned char      _image_bits_per_pixel;
-        unsigned char      _image_descriptor;
+        little_uchar_t  _id_length;
+        little_uchar_t  _color_map_type;
+        little_uchar_t  _image_type;
+        little_ushort_t _color_map_first_entry_index;
+        little_ushort_t _color_map_length;
+        little_uchar_t  _color_map_entry_size;
+        little_ushort_t _image_x_origin;
+        little_ushort_t _image_y_origin;
+        little_ushort_t _image_width;
+        little_ushort_t _image_height;
+        little_uchar_t  _image_bits_per_pixel;
+        little_uchar_t  _image_descriptor;
     };
 #pragma pack(pop)
 
