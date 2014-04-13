@@ -12,9 +12,21 @@ namespace tga {
 #endif
 #pragma pack(push)
 #pragma pack(1)
-    struct tga_header {
+    /**
+     * TGA File Header
+     */
+    struct file_header {
+        /**
+         * Length of the id field (follows directly after the header)
+         */
         little_uchar_t  _id_length;
+        /**
+         * Color map type ID
+         */
         little_uchar_t  _color_map_type;
+        /**
+         * Image map type ID 
+         */
         little_uchar_t  _image_type;
         little_ushort_t _color_map_first_entry_index;
         little_ushort_t _color_map_length;
@@ -42,7 +54,9 @@ namespace tga {
     namespace detail {
         HAS_MEM_FUNC( data, has_data );
 #undef HAS_MEM_FUNC
-
+        /**
+         * Simple version of boost::iterator_range<>
+         */
         template<typename Iterator>
         struct iterator_range {
             Iterator _begin, _end;
@@ -67,14 +81,28 @@ namespace tga {
             }
         };
 
+        /**
+         * Simple version of boost::make_iterator_range<>(from_,to_)
+         */
         template<typename Iterator>
         inline iterator_range<Iterator> make_iterator_range( Iterator from_, Iterator to_ ) {
             return iterator_range<Iterator>{from_, to_};
         }
 
+        /**
+         * TGA reader common base class
+         */
         template<typename DataProvider, typename Derived>
         class reader_base {
         protected:
+            /**
+             * Data store of the source TGA image.
+             * Type needs to export:
+             * - void read(pos_at_file_from, pos_at_file_to, target)
+             * OR
+             * - size_t size()
+             * - const void* data()
+             */
             DataProvider    _src;
 
             inline static bool is_rle( unsigned char byte_ ) { return ( ( (byte_)& 0x80 ) != 0 ); }
@@ -87,13 +115,19 @@ namespace tga {
             void read_maped_pixels_raw( PixelReciver clb_ ) {}
 
             template<typename PixelReciver>
-            void read_mono_pixels_rle( PixelReciver clb_ ) {}
+            void read_mono_pixels_rle( PixelReciver clb_ ) {
+                // mono and color are handled the same way
+                static_cast<Derived*>( this )->read_pixels_rle( std::forward<PixelReciver>( clb_ ) );
+            }
 
             template<typename PixelReciver>
-            void read_mono_pixels_raw( PixelReciver clb_ ) {}
+            void read_mono_pixels_raw( PixelReciver clb_ ) {
+                // mono and color are handled the same way
+                static_cast<Derived*>( this )->read_pixels_raw( std::forward<PixelReciver>( clb_ ) );
+            }
 
             size_t color_map_offset() {
-                return sizeof(tga_header) + header()._id_length;
+                return sizeof(file_header) + header()._id_length;
             }
 
             size_t color_map_size() {
@@ -127,7 +161,7 @@ namespace tga {
             DataProvider& provider() { return _src; }
             const DataProvider& provider() const { return _src; }
 
-            const tga_header& header() const { return static_cast<const Derived*>( this )->get_header(); }
+            const file_header& header() const { return static_cast<const Derived*>( this )->get_header(); }
 
             unsigned int total_pixel_count() const {
                 return  header()._image_width
@@ -172,8 +206,8 @@ namespace tga {
 
         protected:
             friend class reader_base<DataProvider, reader<DataProvider, IsMap>>;
-            tga_header _local_header;
-            const tga_header& get_header() const { return _local_header; }
+            file_header _local_header;
+            const file_header& get_header() const { return _local_header; }
 
             template<typename PixelReciver>
             void read_pixels_raw( PixelReciver clb_ ) {
@@ -230,7 +264,7 @@ namespace tga {
             size_t          _size { 0 };
 
             friend class reader_base<DataProvider, reader<DataProvider, true>>;
-            const tga_header& get_header() const { return *reinterpret_cast<const tga_header*>( _ptr ); }
+            const file_header& get_header() const { return *reinterpret_cast<const file_header*>( _ptr ); }
         public:
             reader() = default;
             ~reader() = default;
@@ -314,12 +348,12 @@ namespace tga {
             switch ( header()._image_type ) {
             default:
             case 0: break;
-            case 1: read_maped_pixels_raw<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
-            case 3: read_mono_pixels_raw<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
-            case 2: read_pixels_raw<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
-            case 9: read_maped_pixels_rle<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
-            case 10: read_pixels_rle<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
-            case 11: read_mono_pixels_rle<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
+            case 1: read_maped_pixels_raw( std::forward<PixelReciver>( clb_ ) ); break;
+            case 3: read_mono_pixels_raw( std::forward<PixelReciver>( clb_ ) ); break;
+            case 2: read_pixels_raw( std::forward<PixelReciver>( clb_ ) ); break;
+            case 9: read_maped_pixels_rle( std::forward<PixelReciver>( clb_ ) ); break;
+            case 10: read_pixels_rle( std::forward<PixelReciver>( clb_ ) ); break;
+            case 11: read_mono_pixels_rle( std::forward<PixelReciver>( clb_ ) ); break;
             }
         }
     };
@@ -346,6 +380,9 @@ namespace tga {
             store_pixel_block(true);
         }
 
+        DataReciver& reciver() { return _dst; }
+        const DataReciver& reciver() const { return _dst; }
+
     private:
         compression_mode    _comp { compression_mode::none };
         unsigned            _w { 0 }, _h { 0 }, _bpp { 0 };
@@ -355,7 +392,7 @@ namespace tga {
         DataReciver         _dst;
 
         void write_header() {
-            tga_header header;
+            file_header header;
             header._id_length = 0;
             header._color_map_type = 0;
             header._image_type = _comp == compression_mode::none ? 2 : 10 ;
