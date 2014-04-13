@@ -180,7 +180,6 @@ namespace tga {
                 const auto pix_size = pixel_bytes();
                 auto at = image_map_offset();
                 auto to = at + image_map_size();
-                unsigned char pix;
                 unsigned char buf[4];
                 for ( ; at < to; ++at ) {
                     _src.read( at, at + pix_size, buf );
@@ -191,37 +190,34 @@ namespace tga {
 
             template<typename PixelReciver>
             void read_pixels_rle( PixelReciver clb_ ) {
-                const auto pix_size = pixel_bytes();
-                auto length = image_map_size();
+                auto from = image_map_offset();
+                const auto to = from + image_map_size();
+                const auto pixel_size = pixel_bytes();
+                unsigned char buf[4];
 
-                auto offset = image_map_offset();
-
-                unsigned char pixel[4];
-
-                size_t at = 0;
-                while ( at < length ) {
-                    _src.read( at + offset, offset + at + 1, &pixel );
-                    ++at;
+                while ( from < to ) {
+                    _src.read( from, from + 1, buf );
+                    ++from;
                     // the difference between a raw and a rle block is just
                     // when to advance after reading, a raw block advances
                     // every pixel, a rle block advances every block
-                    const auto pixels = get_rle_length( pixel[0] );
-                    const auto rle_pixels = is_rle( pixel[0] );
-                    const auto block_advance = rle_pixels ? pix_size : 0;
-                    const auto pixel_advance = rle_pixels ? 0 : pix_size;
-
-                    if ( ( length - at ) < ( pixel_advance * pixels + block_advance ) ) {
+                    const auto is_rle_block = is_rle( buf[0] );
+                    const auto pixel_count = get_rle_length( buf[0] );
+                    const auto block_advance = is_rle_block ? pixel_size : 0;
+                    const auto pixel_advance = is_rle_block ? 0 : pixel_size;
+                    if ( from + block_advance + pixel_advance * pixel_count > to ) {
                         break;
                     }
-                    _src.read( at + offset, at + offset + pix_size, pixel );
-                    for ( unsigned p = 0; p < pixels; ++p ) {
-                        clb_( pixel, pixel + pix_size );
+
+                    _src.read( from, from + pixel_size, buf );
+                    for ( unsigned p = 0; p < pixel_count; ++p ) {
+                        clb_( buf, buf + pixel_size );
                         if ( pixel_advance ) {
                             at += pixel_advance;
-                            _src.read( at + offset, at + offset + pix_size, pixel );
+                            _src.read( from, from + pixel_size, buf );
                         }
                     }
-                    at += block_advance;
+                    from += block_advance;
                 }
             }
         };
@@ -399,7 +395,6 @@ namespace tga {
             if ( _comp == compression_mode::none ) {
                 _dst.write( _pixel_block, _pixel_block + _pixel_block_size * _bpp );
             } else {
-                unsigned char block_header;
                 unsigned offset = 0;
                 unsigned rle_len = 0;
                 unsigned raw_len = 0;
