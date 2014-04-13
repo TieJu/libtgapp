@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+
 namespace tga {
 #if defined(USE_BYTE_ORDER_TYPES)
     typedef ::byte_order::little_uchar_t    little_uchar_t;
@@ -84,6 +86,31 @@ namespace tga {
             template<typename PixelReciver>
             void read_maped_pixels_raw( PixelReciver clb_ ) {}
 
+            template<typename PixelReciver>
+            void read_mono_pixels_rle( PixelReciver clb_ ) {}
+
+            template<typename PixelReciver>
+            void read_mono_pixels_raw( PixelReciver clb_ ) {}
+
+            size_t color_map_offset() {
+                return sizeof(tga_header) + header()._id_length;
+            }
+
+            size_t color_map_size() {
+                return header()._color_map_entry_size
+                     * header()._color_map_length
+                     / 8;
+            }
+
+            size_t image_map_offset() {
+                return color_map_offset()
+                     + color_map_size()
+            }
+
+            size_t image_map_size() {
+                return total_image_size();
+            }
+
         public:
             reader_base() = default;
             ~reader_base() = default;
@@ -104,12 +131,12 @@ namespace tga {
 
             unsigned int total_pixel_count() const {
                 return  header()._image_width
-                    *  header()._image_height;
+                     *  header()._image_height;
             }
 
             unsigned int total_image_bits() const {
                 return total_pixel_count()
-                    *  header()._image_bits_per_pixel;
+                     *  pixel_bits();
             }
 
             unsigned int total_image_size() const {
@@ -151,8 +178,8 @@ namespace tga {
             template<typename PixelReciver>
             void read_pixels_raw( PixelReciver clb_ ) {
                 const auto pix_size = pixel_bytes();
-                auto at = sizeof(tga_header)+header()._id_length;
-                auto to = at + total_pixel_count() * pix_size;
+                auto at = image_map_offset();
+                auto to = at + image_map_size();
                 unsigned char pix;
                 unsigned char buf[4];
                 for ( ; at < to; ++at ) {
@@ -165,15 +192,15 @@ namespace tga {
             template<typename PixelReciver>
             void read_pixels_rle( PixelReciver clb_ ) {
                 const auto pix_size = pixel_bytes();
-                auto length = total_pixel_count() * pix_size;
+                auto length = image_map_size();
 
-                auto offset = sizeof(tga_header)+header()._id_length;
+                auto offset = image_map_offset();
 
                 unsigned char pixel[4];
 
                 size_t at = 0;
                 while ( at < length ) {
-                    _src.read( at, at + 1, &pixel );
+                    _src.read( at + offset, offset + at + 1, &pixel );
                     ++at;
                     // the difference between a raw and a rle block is just
                     // when to advance after reading, a raw block advances
@@ -186,12 +213,12 @@ namespace tga {
                     if ( ( length - at ) < ( pixel_advance * pixels + block_advance ) ) {
                         break;
                     }
-                    _src.read( at, at + pix_size, pixel );
+                    _src.read( at + offset, at + offset + pix_size, pixel );
                     for ( unsigned p = 0; p < pixels; ++p ) {
                         clb_( pixel, pixel + pix_size );
                         if ( pixel_advance ) {
                             at += pixel_advance;
-                            _src.read( at, at + pix_size, pixel );
+                            _src.read( at + offset, at + offset + pix_size, pixel );
                         }
                     }
                     at += block_advance;
@@ -229,7 +256,7 @@ namespace tga {
             void read_pixels_raw( PixelReciver clb_ ) {
                 auto bptr = reinterpret_cast<const unsigned char*>( _ptr );
 
-                auto from = sizeof(tga_header)+header()._id_length;
+                auto from = image_map_offset();
                 auto to = from + total_image_size();
                 if ( to > _size ) {
                     to = _size;
@@ -239,7 +266,7 @@ namespace tga {
 
             template<typename PixelReciver>
             void read_pixels_rle( PixelReciver clb_ ) {
-                auto offset = sizeof(tga_header)+header()._id_length;
+                auto offset = image_map_offset();
                 auto start = reinterpret_cast<const unsigned char*>( _ptr );
                 auto read_range = make_iterator_range( start + offset, start + _size );
                 const auto pix_size = pixel_bytes();
@@ -293,18 +320,147 @@ namespace tga {
             default:
             case 0: break;
             case 1: read_maped_pixels_raw<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
-            case 3:
+            case 3: read_mono_pixels_raw<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
             case 2: read_pixels_raw<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
             case 9: read_maped_pixels_rle<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
-            case 11:
             case 10: read_pixels_rle<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
+            case 11: read_mono_pixels_rle<PixelReciver>( std::forward<PixelReciver>( clb_ ) ); break;
             }
         }
     };
 
+    template<typename DataReciver>
     class writer {
     public:
+        enum class compression_mode { none, rle };
+        void size( unsigned width_, unsigned height_, unsigned bits_per_pixel_ );
+        void flag( compression_mode compression_ );
         template<typename PixelProvider>
-        void write_pxeils( PixelProvider clb_ );
+        void operator()( PixelProvider clb_ ) {
+            write_header();
+
+            auto byte_c = _w * _h * _bpp;
+            _written_bytes = 0;
+            while ( _written_bytes < byte_c ) {
+                auto range = clb_();
+                while ( !range.empty() && byte_c < pix_c ) {
+                    range = next_pixels( range );
+                }
+            }
+            // ensure last block is stored
+            store_pixel_block(true);
+        }
+
+    private:
+        compression_mode    _comp { compression_mode::none };
+        unsigned            _w { 0 }, _h { 0 }, _bpp { 0 };
+        unsigned            _block_size { 0 };
+        unsigned char       _block[128*8];
+        unsigned            _written_bytes;
+        DataReciver         _dst;
+
+        void write_header() {
+            tga_header header;
+            header._id_length = 0;
+            header._color_map_type = 0;
+            header._image_type = _comp == compression_mode::none ? 2 : 10 ;
+            header._color_map_first_entry_index = 0;
+            header._color_map_length = 0;
+            header._color_map_entry_size = 0;
+            header._image_x_origin = 0;
+            header._image_y_origin = 0;
+            header._image_width = _w;
+            header._image_height = _h;
+            header._image_bits_per_pixel = _bpp * 8;
+            header._image_descriptor = _bpp == 4 ? 8 : 0;
+            _dst( &header, &header + 1 );
+        }
+
+        unsigned write_raw_block( unsigned offset_, unsigned length_ ) {
+            auto end = offset_ + length_ * _bpp;
+            _dst( _block + offset_, _block + end );
+            return end;
+        }
+
+        unsigned write_rle_block( unsigned offset_, unsigned length_ ) {
+            auto end = offset_ + _bpp;
+            auto start = _block + offset_;
+            auto stop = _block + end;
+            for ( unsigned rep = 0; rep < length_; ++rep ) {
+                _dst( start, stop );
+            }
+            return end;
+        }
+
+        void store_pixel_block( bool last_block_ = false ) {
+            if ( !_pixel_block_size ) {
+                return;
+            }
+            if ( _comp == compression_mode::none ) {
+                _dst.write( _pixel_block, _pixel_block + _pixel_block_size * _bpp );
+            } else {
+                unsigned char block_header;
+                unsigned offset = 0;
+                unsigned rle_len = 0;
+                unsigned raw_len = 0;
+                unsigned pixel = 0;
+                for ( ; pixel < _pixel_block_size; pixel += _bpp ) {
+                    if ( std::equal( _block + pixel, _block + pixel + _bpp, _block + pixel ) ) {
+                        if ( raw_len ) {
+                            offset = write_raw_block( offset, raw_len );
+                            raw_len = 0;
+                        } else {
+                            ++rle_len;
+                        }
+                    } else {
+                        if ( rle_len ) {
+                            offset = write_rle_block( offset, rle_len );
+                            rle_len = 0;
+                        } else {
+                            ++raw_len;
+                        }
+                    }
+
+                    if ( raw_len == 128 ) {
+                        offset = write_raw_block( offset, raw_len );
+                        raw_len = 0;
+                    } else if ( rle_len == 128 ) {
+                        offset = write_rle_block( offset, rle_len );
+                        rle_len = 0;
+                    }
+                }
+                if ( last_block_ ) {
+                    if ( raw_len ) {
+                        write_raw_block( offset, raw_len );
+                    } else if ( rle_len ) {
+                        write_rle_block( offset, rle_len );
+                    }
+                    _block_size = 0;
+                } else if ( offset < _block_size ) {
+                    std::copy( _block + offset, _block + _block_size, _block );
+                    _block_size -= offset;
+                }
+            }
+        }
+
+        template<typename Range>
+        Range next_pixels( Range pixel_ ) {
+            while ( !pixel_.empty() ) {
+                pixel_ = fill_pixel_block( pixel_ );
+            }
+        }
+
+        template<typename Range>
+        Range fill_pixel_block( Range pixel_ ) {
+            if ( _block_size == sizeof( _block ) ) {
+                store_pixel_block();
+            }
+            while ( _block_size < sizeof( _block ) && !pixel_.empty() ) {
+                _block[_block_size++] = pixel_.front();
+                pixel_.pop_front();
+                ++_written_bytes;
+            }
+            return pixel_;
+        }
     };
 }
