@@ -104,7 +104,7 @@ namespace tga {
 
             size_t image_map_offset() {
                 return color_map_offset()
-                     + color_map_size()
+                     + color_map_size();
             }
 
             size_t image_map_size() {
@@ -262,26 +262,25 @@ namespace tga {
 
             template<typename PixelReciver>
             void read_pixels_rle( PixelReciver clb_ ) {
-                auto offset = image_map_offset();
-                auto start = reinterpret_cast<const unsigned char*>( _ptr );
-                auto read_range = make_iterator_range( start + offset, start + _size );
-                const auto pix_size = pixel_bytes();
+                auto start = reinterpret_cast<const unsigned char*>( _ptr ) + image_map_offset();
+                auto read_range = make_iterator_range( start, start + image_map_size() );
+                const auto pixel_size = pixel_bytes();
 
                 while ( !read_range.empty() ) {
                     // the difference between a raw and a rle block is just
                     // when to advance after reading, a raw block advances
                     // every pixel, a rle block advances every block
-                    const auto pixels = get_rle_length( read_range.front() );
-                    const auto rle_pixels = is_rle( read_range.front() );
-                    const auto block_advance = rle_pixels ? pix_size : 0;
-                    const auto pixel_advance = rle_pixels ? 0 : pix_size;
+                    const auto is_rle_block = is_rle( read_range.front() );
+                    const auto pixel_count = get_rle_length( read_range.front() );
+                    const auto block_advance = is_rle_block ? pixel_size : 0;
+                    const auto pixel_advance = is_rle_block ? 0 : pixel_size;
                     read_range.pop_front();
 
-                    if ( read_range.size() < ( pixel_advance * pixels + block_advance ) ) {
+                    if ( pixel_advance * pixel_count + block_advance > read_range.size() ) {
                         break;
                     }
-                    for ( unsigned p = 0; p < pixels; ++p ) {
-                        clb_( read_range.begin(), read_range.begin() + pix_size );
+                    for ( unsigned p = 0; p < pixel_count; ++p ) {
+                        clb_( read_range.begin(), read_range.begin() + pixel_size );
                         read_range.advance_begin( pixel_advance );
                     }
                     read_range.advance_begin( block_advance );
